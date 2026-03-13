@@ -1,0 +1,10 @@
+# Route Table Viewer dependencies
+# This project uses only Python standard library modules:
+# - argparse
+# - socket
+# - struct
+# - sys
+# - collections
+# - typing
+#
+# No external dependencies required.
