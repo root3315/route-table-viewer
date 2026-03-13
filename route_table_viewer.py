@@ -8,11 +8,11 @@ import socket
 import struct
 import sys
 from collections import namedtuple
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 RouteEntry = namedtuple(
     "RouteEntry",
-    ["iface", "destination", "gateway", "flags", "metric", "mask", "mtu", "window", "irtt"],
+    ["iface", "destination", "gateway", "flags", "metric", "mask", "mtu", "window", "irtt", "family"],
 )
 
 FLAG_MAP = {
@@ -27,26 +27,64 @@ FLAG_MAP = {
     0x0200: "XRESOLVE",
 }
 
+IPV6_FLAG_MAP = {
+    0x0001: "UP",
+    0x0002: "GATEWAY",
+    0x0004: "HOST",
+    0x0008: "REINSTATE",
+    0x0010: "DYNAMIC",
+    0x0020: "MODIFIED",
+    0x0040: "ADDRCONF",
+    0x0100: "CACHE",
+    0x0200: "XRESOLVE",
+    0x0400: "NONRT",
+    0x0800: "PREFIX",
+    0x1000: "LOCAL",
+}
 
-def int_to_ip(ip_int: int) -> str:
+
+def int_to_ip(ip_int: int, family: str = "ipv4") -> str:
     """Convert a 32-bit integer to dotted decimal IP address."""
+    if family == "ipv6":
+        return "0::0"
     try:
         return socket.inet_ntoa(struct.pack("<I", ip_int))
     except struct.error:
         return "0.0.0.0"
 
 
-def parse_flags(flag_value: int) -> str:
+def hex_to_ipv6(hex_str: str) -> str:
+    """Convert IPv6 hex string to standard notation."""
+    try:
+        addr_bytes = bytes.fromhex(hex_str)
+        if len(addr_bytes) != 16:
+            return "::"
+        packed = struct.pack(">16B", *addr_bytes)
+        return socket.inet_ntop(socket.AF_INET6, packed)
+    except (ValueError, struct.error, OSError):
+        return "::"
+
+
+def hex_to_ipv6_prefixlen(hex_str: str) -> str:
+    """Convert IPv6 prefix length from hex to decimal."""
+    try:
+        return str(int(hex_str, 16))
+    except ValueError:
+        return "0"
+
+
+def parse_flags(flag_value: int, family: str = "ipv4") -> str:
     """Convert numeric flag value to human-readable flag string."""
+    flag_map = IPV6_FLAG_MAP if family == "ipv6" else FLAG_MAP
     flags = []
-    for bit, name in FLAG_MAP.items():
+    for bit, name in sorted(flag_map.items()):
         if flag_value & bit:
             flags.append(name)
     return "|".join(flags) if flags else "NONE"
 
 
 def read_proc_route() -> List[RouteEntry]:
-    """Read routing table from /proc/net/route."""
+    """Read IPv4 routing table from /proc/net/route."""
     routes = []
     try:
         with open("/proc/net/route", "r") as f:
@@ -86,20 +124,21 @@ def read_proc_route() -> List[RouteEntry]:
             metric_int = int(metric_hex, 16)
             mask_int = int(mask_hex, 16)
 
-            destination = int_to_ip(dest_int)
-            gateway = int_to_ip(gateway_int)
-            mask = int_to_ip(mask_int)
+            destination = int_to_ip(dest_int, "ipv4")
+            gateway = int_to_ip(gateway_int, "ipv4")
+            mask = int_to_ip(mask_int, "ipv4")
 
             entry = RouteEntry(
                 iface=iface,
                 destination=destination,
                 gateway=gateway,
-                flags=parse_flags(flags_int),
+                flags=parse_flags(flags_int, "ipv4"),
                 metric=str(metric_int),
                 mask=mask,
                 mtu=mtu,
                 window=window,
                 irtt=irtt,
+                family="ipv4",
             )
             routes.append(entry)
         except ValueError:
@@ -108,11 +147,80 @@ def read_proc_route() -> List[RouteEntry]:
     return routes
 
 
+def read_proc_ipv6_route() -> List[RouteEntry]:
+    """Read IPv6 routing table from /proc/net/ipv6_route."""
+    routes = []
+    try:
+        with open("/proc/net/ipv6_route", "r") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return routes
+    except PermissionError:
+        print("Error: Permission denied reading /proc/net/ipv6_route", file=sys.stderr)
+        return routes
+
+    for line in lines[1:]:
+        parts = line.strip().split()
+        if len(parts) < 10:
+            continue
+
+        dest_addr = parts[0]
+        dest_prefixlen = parts[1]
+        source_addr = parts[2]
+        source_prefixlen = parts[3]
+        gateway = parts[4]
+        metric = parts[5]
+        ref_cnt = parts[6]
+        use_cnt = parts[7]
+        netdev = parts[8]
+        mtu = "0"
+        irtt = "0"
+        if len(parts) >= 11:
+            mtu = parts[9]
+            irtt = parts[10]
+
+        try:
+            destination = hex_to_ipv6(dest_addr)
+            prefix_len = hex_to_ipv6_prefixlen(dest_prefixlen)
+            gateway_addr = hex_to_ipv6(gateway)
+
+            flags_int = int(metric, 16) if metric else 0
+
+            entry = RouteEntry(
+                iface=netdev,
+                destination=f"{destination}/{prefix_len}",
+                gateway=gateway_addr,
+                flags=parse_flags(flags_int, "ipv6"),
+                metric=str(flags_int),
+                mask=prefix_len,
+                mtu=mtu,
+                window="0",
+                irtt=irtt,
+                family="ipv6",
+            )
+            routes.append(entry)
+        except ValueError:
+            continue
+
+    return routes
+
+
+def read_all_routes() -> Tuple[List[RouteEntry], List[RouteEntry]]:
+    """Read both IPv4 and IPv6 routing tables."""
+    ipv4_routes = read_proc_route()
+    ipv6_routes = read_proc_ipv6_route()
+    return ipv4_routes, ipv6_routes
+
+
 def get_default_gateway(routes: List[RouteEntry]) -> Optional[str]:
     """Find the default gateway from the routing table."""
     for route in routes:
-        if route.destination == "0.0.0.0" and "GATEWAY" in route.flags:
-            return route.gateway
+        if route.family == "ipv6":
+            if route.destination == "::/0" and "GATEWAY" in route.flags:
+                return route.gateway
+        else:
+            if route.destination == "0.0.0.0" and "GATEWAY" in route.flags:
+                return route.gateway
     return None
 
 
@@ -127,7 +235,14 @@ def get_routes_for_network(routes: List[RouteEntry], network: str) -> List[Route
     for route in routes:
         if route.destination == network or route.gateway == network:
             matching.append(route)
+        elif network in route.destination:
+            matching.append(route)
     return matching
+
+
+def get_routes_by_family(routes: List[RouteEntry], family: str) -> List[RouteEntry]:
+    """Filter routes by IP family."""
+    return [r for r in routes if r.family == family]
 
 
 def format_table(routes: List[RouteEntry], show_all: bool = True) -> str:
@@ -135,17 +250,16 @@ def format_table(routes: List[RouteEntry], show_all: bool = True) -> str:
     if not routes:
         return "No routes found."
 
-    headers = ["Destination", "Gateway", "Genmask", "Flags", "Metric", "Ref", "Use", "Iface"]
-    
+    headers = ["Family", "Destination", "Gateway", "Genmask", "Flags", "Metric", "Iface"]
+
     col_widths = [
-        max(len(headers[0]), max((len(r.destination) for r in routes), default=0)),
-        max(len(headers[1]), max((len(r.gateway) for r in routes), default=0)),
-        max(len(headers[2]), max((len(r.mask) for r in routes), default=0)),
-        max(len(headers[3]), max((len(r.flags) for r in routes), default=0)),
-        max(len(headers[4]), max((len(r.metric) for r in routes), default=0)),
-        5,
-        5,
-        max(len(headers[7]), max((len(r.iface) for r in routes), default=0)),
+        max(len(headers[0]), max((len(r.family) for r in routes), default=0)),
+        max(len(headers[1]), max((len(r.destination) for r in routes), default=0)),
+        max(len(headers[2]), max((len(r.gateway) for r in routes), default=0)),
+        max(len(headers[3]), max((len(r.mask) for r in routes), default=0)),
+        max(len(headers[4]), max((len(r.flags) for r in routes), default=0)),
+        max(len(headers[5]), max((len(r.metric) for r in routes), default=0)),
+        max(len(headers[6]), max((len(r.iface) for r in routes), default=0)),
     ]
 
     lines = []
@@ -155,14 +269,13 @@ def format_table(routes: List[RouteEntry], show_all: bool = True) -> str:
 
     for route in routes:
         row = [
-            route.destination.ljust(col_widths[0]),
-            route.gateway.ljust(col_widths[1]),
-            route.mask.ljust(col_widths[2]),
-            route.flags.ljust(col_widths[3]),
-            route.metric.ljust(col_widths[4]),
-            route.ref.ljust(col_widths[5]) if hasattr(route, 'ref') else "0".ljust(col_widths[5]),
-            route.use.ljust(col_widths[6]) if hasattr(route, 'use') else "0".ljust(col_widths[6]),
-            route.iface.ljust(col_widths[7]),
+            route.family.ljust(col_widths[0]),
+            route.destination.ljust(col_widths[1]),
+            route.gateway.ljust(col_widths[2]),
+            route.mask.ljust(col_widths[3]),
+            route.flags.ljust(col_widths[4]),
+            route.metric.ljust(col_widths[5]),
+            route.iface.ljust(col_widths[6]),
         ]
         lines.append("  ".join(row))
 
@@ -174,6 +287,7 @@ def format_detailed(routes: List[RouteEntry]) -> str:
     lines = []
     for i, route in enumerate(routes, 1):
         lines.append(f"Route #{i}")
+        lines.append(f"  Family:      {route.family}")
         lines.append(f"  Interface:   {route.iface}")
         lines.append(f"  Destination: {route.destination}")
         lines.append(f"  Gateway:     {route.gateway}")
@@ -205,6 +319,8 @@ Examples:
   %(prog)s --interface eth0   Filter routes by interface
   %(prog)s --default          Show only the default gateway
   %(prog)s --interfaces       List all network interfaces
+  %(prog)s --ipv4             Show only IPv4 routes
+  %(prog)s --ipv6             Show only IPv6 routes
         """,
     )
 
@@ -237,6 +353,16 @@ Examples:
         help="List all network interfaces with routes",
     )
     parser.add_argument(
+        "--ipv4",
+        action="store_true",
+        help="Show only IPv4 routes",
+    )
+    parser.add_argument(
+        "--ipv6",
+        action="store_true",
+        help="Show only IPv6 routes",
+    )
+    parser.add_argument(
         "--no-header",
         action="store_true",
         help="Suppress header output",
@@ -244,7 +370,16 @@ Examples:
 
     args = parser.parse_args()
 
-    routes = read_proc_route()
+    ipv4_routes, ipv6_routes = read_all_routes()
+
+    if args.ipv4 and args.ipv6:
+        routes = []
+    elif args.ipv4:
+        routes = ipv4_routes
+    elif args.ipv6:
+        routes = ipv6_routes
+    else:
+        routes = ipv4_routes + ipv6_routes
 
     if not routes:
         print("No routing table entries found.", file=sys.stderr)

@@ -1,10 +1,12 @@
 # route-table-viewer
 
-A simple CLI tool to view and inspect your system's routing table. Because sometimes `ip route` gives you too much and `netstat -rn` feels too old-school.
+A simple CLI tool to view and inspect your system's routing tables. Because sometimes `ip route` gives you too much and `netstat -rn` feels too old-school.
 
 ## What it does
 
-Reads `/proc/net/route` and displays your routing table in a clean, readable format. Also lets you filter by interface, find the default gateway, or get detailed info about specific routes.
+Reads `/proc/net/route` and `/proc/net/ipv6_route` and displays your routing tables in a clean, readable format. Also lets you filter by interface, find the default gateway, or get detailed info about specific routes.
+
+Supports both IPv4 and IPv6 routing tables.
 
 ## Installation
 
@@ -24,9 +26,19 @@ python3 route_table_viewer.py
 
 ## Usage
 
-Show all routes:
+Show all routes (IPv4 and IPv6):
 ```bash
 python3 route_table_viewer.py
+```
+
+Show only IPv4 routes:
+```bash
+python3 route_table_viewer.py --ipv4
+```
+
+Show only IPv6 routes:
+```bash
+python3 route_table_viewer.py --ipv6
 ```
 
 Detailed view with all the juicy details:
@@ -54,12 +66,14 @@ python3 route_table_viewer.py --interfaces
 The default table output looks like:
 
 ```
-Routing Table (5 entries)
+Routing Table (7 entries)
 
-Destination      Gateway          Genmask         Flags   Metric  Ref  Use  Iface
----------------------------------------------------------------------------
-0.0.0.0          192.168.1.1      0.0.0.0         UP|GATEWAY  0    0    0    eth0
-192.168.1.0      0.0.0.0          255.255.255.0   UP        0    0    0    eth0
+Family  Destination        Gateway              Genmask  Flags         Metric  Iface
+------------------------------------------------------------------------------------
+ipv4    0.0.0.0            192.168.1.1          0.0.0.0  UP|GATEWAY    0       eth0
+ipv4    192.168.1.0        0.0.0.0              255.255.255.0  UP      0       eth0
+ipv6    ::/0               fe80::1              0        UP|GATEWAY    0       eth0
+ipv6    fe80::/64          ::                   64       UP            0       eth0
 ```
 
 ## Why I wrote this
@@ -69,18 +83,19 @@ Honestly, I just wanted something that:
 - Has a `--default` flag to quickly grab the gateway
 - Is easy to script against
 - Doesn't require parsing `ip route` output which changes between distros
+- Supports both IPv4 and IPv6 in a single view
 
 ## Requirements
 
 - Python 3.6+
-- Linux (reads `/proc/net/route`)
-- Root or read access to `/proc/net/route`
+- Linux (reads `/proc/net/route` and `/proc/net/ipv6_route`)
+- Root or read access to `/proc/net/route` and `/proc/net/ipv6_route`
 
 ## Notes
 
 - This only works on Linux since it reads `/proc/net/route` directly
-- IPv6 routes are not supported (yet)
-- The flags are decoded from the numeric values in the proc file
+- IPv6 routes use prefix length notation instead of netmask
+- The flags are decoded from the numeric values in the proc files
 
 ## License
 
