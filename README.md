@@ -61,6 +61,11 @@ List all interfaces that have routes:
 python3 route_table_viewer.py --interfaces
 ```
 
+Output as JSON for scripting:
+```bash
+python3 route_table_viewer.py --json
+```
+
 ## Output format
 
 The default table output looks like:
@@ -74,6 +79,25 @@ ipv4    0.0.0.0            192.168.1.1          0.0.0.0  UP|GATEWAY    0       e
 ipv4    192.168.1.0        0.0.0.0              255.255.255.0  UP      0       eth0
 ipv6    ::/0               fe80::1              0        UP|GATEWAY    0       eth0
 ipv6    fe80::/64          ::                   64       UP            0       eth0
+```
+
+JSON output format:
+```json
+{
+  "routes": [
+    {
+      "family": "ipv4",
+      "interface": "eth0",
+      "destination": "0.0.0.0",
+      "gateway": "192.168.1.1",
+      "netmask": "0.0.0.0",
+      "flags": ["UP", "GATEWAY"],
+      "metric": 0,
+      "mtu": 0,
+      "irtt": 0
+    }
+  ]
+}
 ```
 
 ## Why I wrote this

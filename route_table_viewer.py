@@ -4,6 +4,7 @@ Route Table Viewer - CLI tool to view and inspect system routing tables.
 """
 
 import argparse
+import json
 import socket
 import struct
 import sys
@@ -282,6 +283,25 @@ def format_table(routes: List[RouteEntry], show_all: bool = True) -> str:
     return "\n".join(lines)
 
 
+def format_json(routes: List[RouteEntry]) -> str:
+    """Format routes as JSON for scripting."""
+    route_list = []
+    for route in routes:
+        route_dict = {
+            "family": route.family,
+            "interface": route.iface,
+            "destination": route.destination,
+            "gateway": route.gateway,
+            "netmask": route.mask,
+            "flags": route.flags.split("|") if route.flags else [],
+            "metric": int(route.metric) if route.metric.isdigit() else 0,
+            "mtu": int(route.mtu) if route.mtu.isdigit() else 0,
+            "irtt": int(route.irtt) if route.irtt.isdigit() else 0,
+        }
+        route_list.append(route_dict)
+    return json.dumps({"routes": route_list}, indent=2)
+
+
 def format_detailed(routes: List[RouteEntry]) -> str:
     """Format routes with detailed information."""
     lines = []
@@ -367,6 +387,11 @@ Examples:
         action="store_true",
         help="Suppress header output",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output routes in JSON format for scripting",
+    )
 
     args = parser.parse_args()
 
@@ -411,6 +436,11 @@ Examples:
         if not routes:
             print(f"No routes found for network: {args.network}", file=sys.stderr)
             sys.exit(1)
+
+    if args.json:
+        output = format_json(routes)
+        print(output)
+        return
 
     if not args.no_header and not args.detailed:
         print(f"Routing Table ({len(routes)} entries)\n")
